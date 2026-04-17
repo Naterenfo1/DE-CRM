@@ -851,13 +851,8 @@ const DEFAULT_EMAIL     = 'Info@dakotaearthworks.com';
 function getSettings() {
   try {
     const s = JSON.parse(localStorage.getItem('de_crm_settings') || '{}');
-    return {
-      sheetUrl: s.sheetUrl || DEFAULT_SHEET_URL,
-      email:    s.email    || DEFAULT_EMAIL
-    };
-  } catch(e) {
-    return { sheetUrl: DEFAULT_SHEET_URL, email: DEFAULT_EMAIL };
-  }
+    return { sheetUrl: s.sheetUrl || DEFAULT_SHEET_URL, email: s.email || DEFAULT_EMAIL };
+  } catch(e) { return { sheetUrl: DEFAULT_SHEET_URL, email: DEFAULT_EMAIL }; }
 }
 function saveSettings() {
   const s = { sheetUrl: document.getElementById('s_sheetUrl').value.trim() || DEFAULT_SHEET_URL, email: document.getElementById('s_email').value.trim() || DEFAULT_EMAIL };
@@ -872,11 +867,25 @@ function openSettings() {
   openModal('settingsModal');
 }
 
-// ─── SHEETS SYNC ───────────────────────────────────────────────────────────
-async function syncToSheets() {
+// ─── SHEETS SYNC (TWO-WAY) ─────────────────────────────────────────────────
+async function pullFromSheets() {
+  const s = getSettings();
+  if (!s.sheetUrl) return false;
+  try {
+    const res = await fetch(s.sheetUrl + '?action=load', { method: 'GET', mode: 'cors' });
+    const data = await res.json();
+    if (data.status === 'ok' && Array.isArray(data.clients) && data.clients.length > 0) {
+      clients = data.clients;
+      localStorage.setItem('de_crm_clients', JSON.stringify(clients));
+      return true;
+    }
+    return false;
+  } catch(e) { return false; }
+}
+
+async function pushToSheets() {
   const s = getSettings();
   if (!s.sheetUrl) return;
-  setSyncStatus('syncing');
   try {
     await fetch(s.sheetUrl, {
       method: 'POST',
@@ -884,16 +893,27 @@ async function syncToSheets() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'sync', clients: clients })
     });
-    setSyncStatus('synced');
     localStorage.setItem('de_crm_last_sync', new Date().toISOString());
-  } catch(e) {
-    setSyncStatus('error');
-  }
+  } catch(e) {}
 }
+
+async function syncToSheets() {
+  const s = getSettings();
+  if (!s.sheetUrl) return;
+  setSyncStatus('syncing');
+  await pushToSheets();
+  setSyncStatus('synced');
+}
+
 async function manualSync() {
   const btn = document.getElementById('syncBtn');
   btn.disabled = true;
-  await syncToSheets();
+  setSyncStatus('syncing');
+  // Pull first, then push so both directions complete
+  const pulled = await pullFromSheets();
+  await pushToSheets();
+  setSyncStatus('synced');
+  renderClients();
   btn.disabled = false;
 }
 function setSyncStatus(state) {
@@ -1555,6 +1575,24 @@ function exportPDF(id) {
 // ─── INIT ──────────────────────────────────────────────────────────────────
 load();
 renderClients();
+
+// Pull from Sheets on every open — always get latest data
+(async () => {
+  setSyncStatus('syncing');
+  const pulled = await pullFromSheets();
+  setSyncStatus(pulled ? 'synced' : 'local');
+  if (pulled) {
+    renderClients();
+    // Also refresh whichever tab is active
+    const activeTab = document.querySelector('.tab.active');
+    if (activeTab) {
+      const tab = activeTab.dataset.tab;
+      if (tab === 'pipeline') renderPipeline();
+      if (tab === 'callbacks') renderCallbacks();
+      if (tab === 'progress') renderProgressView();
+    }
+  }
+})();
 </script>
 </body>
 </html>
